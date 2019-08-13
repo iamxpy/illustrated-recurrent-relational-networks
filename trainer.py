@@ -4,8 +4,11 @@ from model import Model
 
 
 def train(model: Model):
-    n_updates = 10000000
-    val_interval = 1000
+    # times of gradient updates
+    # n_updates = 10000000
+    # val_interval = 1000
+    n_updates = 100
+    val_interval = 10
 
     start = time.time()
     best = float("inf")

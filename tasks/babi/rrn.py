@@ -35,12 +35,16 @@ class BaBiRecurrentRelationalNet(Model):
         self.is_testing = is_testing
 
         print("Preparing data...")
+        # train/valid/test is list of 'task', and 'task' contains the training examples with the same task_idx
+        # i.e. 'task' is a list of {'fact_positions': [0, 1], 'a': 15, 'facts': [[92, 102, 150, 142, 15], [82, 160, 150, 142, 71]], 'q': [163, 78, 92], 'task_idx': 0}
+        # vocab contains a _unk_token='UNK' and a dict which is a map from word to its index
         self.train, self.valid, self.test, self.vocab = self.encode_data(bAbI('en-valid-10k'))
 
         print("Creating graph...")
         with tf.Graph().as_default(), tf.device('/cpu:0'):
-            regularizer = layers.l2_regularizer(1e-4)
+            regularizer = layers.l2_regularizer(1e-4)  # regularizer applied to fully-connected network
 
+            # allow_soft_placement means if cannot find specific device, allow tf to auto-choose the device
             self.session = tf.Session(config=tf.ConfigProto(allow_soft_placement=True))
             self.global_step = tf.Variable(initial_value=0, trainable=False)
             self.optimizer = tf.train.AdamOptimizer(learning_rate=2e-4)
@@ -58,9 +62,13 @@ class BaBiRecurrentRelationalNet(Model):
             self.edge_keep_prob_ph = tf.placeholder(tf.float32, shape=())
             self.is_training_ph = tf.placeholder(tf.bool)
 
-            placeholders = [self.facts_ph, self.facts_pos_ph, self.question_ph, self.answers_ph, self.edge_indices_ph, self.fact_segments_ph, self.edge_segments_ph, self.q_seq_length_ph, self.f_seq_length_ph, self.task_indices_ph, self.edge_keep_prob_ph]
+            placeholders = [self.facts_ph, self.facts_pos_ph, self.question_ph, self.answers_ph, self.edge_indices_ph,
+                            self.fact_segments_ph, self.edge_segments_ph, self.q_seq_length_ph, self.f_seq_length_ph,
+                            self.task_indices_ph, self.edge_keep_prob_ph]
 
+            # each element of train_queue is a training batch
             self.train_queue = tf.FIFOQueue(self.qsize, [ph.dtype for ph in placeholders], name='train-queue')
+            # each element of train_queue is a validation batch
             self.val_queue = tf.FIFOQueue(self.qsize, [ph.dtype for ph in placeholders], name='val-queue')
 
             self.train_enqueue_op = self.train_queue.enqueue(placeholders)
@@ -87,34 +95,43 @@ class BaBiRecurrentRelationalNet(Model):
                                 false_fn=lambda: self.val_queue.dequeue(),
                             )
 
-                            vars = (facts_ph, facts_pos_ph, question_ph, answers_ph, edge_indices_ph, fact_segments_ph, edge_segments_ph, q_seq_length_ph, f_seq_length_ph, task_indices_ph, edge_keep_prob)
+                            vars = (facts_ph, facts_pos_ph, question_ph, answers_ph, edge_indices_ph, fact_segments_ph,
+                                    edge_segments_ph, q_seq_length_ph, f_seq_length_ph, task_indices_ph, edge_keep_prob)
                             for v, ph in zip(vars, placeholders):
                                 v.set_shape(ph.get_shape())
 
-                        facts_emb = layers.embed_sequence(facts_ph, self.vocab.size(), self.emb_size, scope='word-embeddings')
-                        questions_emb = layers.embed_sequence(question_ph, self.vocab.size(), self.emb_size, scope='word-embeddings', reuse=True)
+                        facts_emb = layers.embed_sequence(facts_ph, self.vocab.size(), self.emb_size,
+                                                          scope='word-embeddings')
+                        questions_emb = layers.embed_sequence(question_ph, self.vocab.size(), self.emb_size,
+                                                              scope='word-embeddings', reuse=True)
 
                     with tf.device(device), tf.name_scope("device-%s" % device_nr):
                         def mlp(x, scope, n_hidden):
                             with tf.variable_scope(scope):
                                 for i in range(3):
                                     x = layers.fully_connected(x, n_hidden, weights_regularizer=regularizer)
-                                return layers.fully_connected(x, n_hidden, weights_regularizer=regularizer, activation_fn=None)
+                                return layers.fully_connected(x, n_hidden, weights_regularizer=regularizer,
+                                                              activation_fn=None)
 
-                        _, (_, f_encoding) = tf.nn.dynamic_rnn(tf.nn.rnn_cell.LSTMCell(32), facts_emb, dtype=tf.float32, sequence_length=f_seq_length_ph, scope='fact-encoder')
+                        _, (_, f_encoding) = tf.nn.dynamic_rnn(tf.nn.rnn_cell.LSTMCell(32), facts_emb, dtype=tf.float32,
+                                                               sequence_length=f_seq_length_ph, scope='fact-encoder')
 
-                        random_pos_offsets = tf.random_uniform(tf.shape(answers_ph), minval=0, maxval=self.num_facts, dtype=tf.int32)
+                        random_pos_offsets = tf.random_uniform(tf.shape(answers_ph), minval=0, maxval=self.num_facts,
+                                                               dtype=tf.int32)
                         fact_pos = facts_pos_ph + tf.gather(random_pos_offsets, fact_segments_ph)
                         facts_pos_encoding = tf.one_hot(fact_pos, 2 * self.num_facts)
                         f_encoding = tf.concat([f_encoding, facts_pos_encoding], axis=1)
 
-                        _, (_, q_encoding) = tf.nn.dynamic_rnn(tf.nn.rnn_cell.LSTMCell(32), questions_emb, dtype=tf.float32, sequence_length=q_seq_length_ph, scope='question-encoder')
+                        _, (_, q_encoding) = tf.nn.dynamic_rnn(tf.nn.rnn_cell.LSTMCell(32), questions_emb,
+                                                               dtype=tf.float32, sequence_length=q_seq_length_ph,
+                                                               scope='question-encoder')
 
                         def graph_fn(x):
                             with tf.variable_scope('graph-fn'):
                                 x = layers.fully_connected(x, self.n_hidden, weights_regularizer=regularizer)
                                 x = layers.fully_connected(x, self.n_hidden, weights_regularizer=regularizer)
-                                return layers.fully_connected(x, self.vocab.size(), activation_fn=None, weights_regularizer=regularizer)
+                                return layers.fully_connected(x, self.vocab.size(), activation_fn=None,
+                                                              weights_regularizer=regularizer)
 
                         x = tf.concat([f_encoding, tf.gather(q_encoding, fact_segments_ph)], 1)
                         x0 = mlp(x, 'pre', self.n_hidden)
@@ -127,16 +144,18 @@ class BaBiRecurrentRelationalNet(Model):
                             state = lstm_cell.zero_state(tf.shape(x)[0], tf.float32)
 
                             for step in range(self.n_steps):
-                                x = message_passing(x, edge_indices_ph, edge_features, lambda x: mlp(x, 'message-fn', self.n_hidden), edge_keep_prob)
+                                x = message_passing(x, edge_indices_ph, edge_features,
+                                                    lambda x: mlp(x, 'message-fn', self.n_hidden), edge_keep_prob)
                                 x = mlp(tf.concat([x, x0], axis=1), 'post-fn', self.n_hidden)
                                 x, state = lstm_cell(x, state)
                                 with tf.variable_scope('graph-sum'):
                                     graph_sum = tf.segment_sum(x, fact_segments_ph)
                                     out = graph_fn(graph_sum)
                                     outputs.append(out)
-                                    log_losses.append(tf.reduce_mean(tf.nn.sparse_softmax_cross_entropy_with_logits(labels=answers_ph, logits=out)))
+                                    log_losses.append(tf.reduce_mean(
+                                        tf.nn.sparse_softmax_cross_entropy_with_logits(labels=answers_ph, logits=out)))
 
-                                tf.get_variable_scope().reuse_variables()
+                                tf.get_variable_scope().reuse_variables()  # reuse the Variables in LSTM across different time step
 
                         reg_loss = sum(tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES))
                         loss = avg_n(log_losses) + reg_loss
@@ -149,8 +168,9 @@ class BaBiRecurrentRelationalNet(Model):
                             'outputs': tf.stack(outputs),  # (n_steps, batch_size, n_outputs)
                             'task_indices': task_indices_ph  # (batch_size, n_outputs
                         })
-
-                        tf.get_variable_scope().reuse_variables()
+                        print('line 159: ')
+                        print('"' + tf.get_variable_scope().name + '"')
+                        tf.get_variable_scope().reuse_variables()  # reuse the parameters in LSTM across different time step
 
             self.loss = avg_n([t['loss'] for t in towers])
             self.out = tf.concat([t['outputs'] for t in towers], axis=1)
@@ -164,14 +184,18 @@ class BaBiRecurrentRelationalNet(Model):
                 tf.summary.scalar('steps/%d/losses/log' % i, log_losses[i])
 
             avg_gradients = util.average_gradients([t['grads'] for t in towers])
+
+            # global_step increases by 1 after the gradient is updated
             self.train_step = self.optimizer.apply_gradients(avg_gradients, global_step=self.global_step)
 
             self.session.run(tf.global_variables_initializer())
             self.saver = tf.train.Saver()
             util.print_vars(tf.trainable_variables())
 
-            self.train_writer = tf.summary.FileWriter('/tmp/tensorboard/bAbI/%s/train/%s' % (self.revision, self.name), self.session.graph)
-            self.test_writer = tf.summary.FileWriter('/tmp/tensorboard/bAbI/%s/test/%s' % (self.revision, self.name), self.session.graph)
+            self.train_writer = tf.summary.FileWriter('/tmp/tensorboard/bAbI/%s/train/%s' % (self.revision, self.name),
+                                                      self.session.graph)
+            self.test_writer = tf.summary.FileWriter('/tmp/tensorboard/bAbI/%s/test/%s' % (self.revision, self.name),
+                                                     self.session.graph)
 
             self.summaries = tf.summary.merge_all()
 
@@ -179,17 +203,22 @@ class BaBiRecurrentRelationalNet(Model):
         train_mp_queue = mp.Manager().Queue(maxsize=self.qsize)
         val_mp_queue = mp.Manager().Queue(maxsize=self.qsize)
 
+        # 4 processes are used to load training data into train_mp_queue. (Disk -> Memory)
         data_loader_processes = [mp.Process(target=self.data_loader, args=(train_mp_queue, True)) for i in range(4)]
+        # 1 process is used to load validation data into val_mp_queue. (Disk -> Memory)
         val_data_loader_processes = [mp.Process(target=self.data_loader, args=(val_mp_queue, False)) for i in range(1)]
 
+        # start the process to load data
         for p in data_loader_processes + val_data_loader_processes:
             p.daemon = True
             p.start()
 
+        # use 2 threads to transfer data from train_mp_queue(val_mp_queue) to train_queue(val_queue). (Memory->Memory)
         queue_putter_threads = [
             threading.Thread(target=self.queue_putter, args=(train_mp_queue, self.train_enqueue_op, 'train', 1000)),
             threading.Thread(target=self.queue_putter, args=(val_mp_queue, self.val_enqueue_op, 'val', 1)),
         ]
+        # start data transferring
         for t in queue_putter_threads:
             t.daemon = True
             t.start()
@@ -197,6 +226,7 @@ class BaBiRecurrentRelationalNet(Model):
         train_qsize, val_qsize = 0, 0
         print("Waiting for queue to fill...")
         while train_qsize < self.qsize or val_qsize < self.qsize:
+            # update the size of the queues of training and validation
             train_qsize = self.session.run(self.train_qsize_op)
             val_qsize = self.session.run(self.val_qsize_op)
             print('train_qsize: %d, val_qsize: %d' % (train_qsize, val_qsize), flush=True)
@@ -301,14 +331,18 @@ class BaBiRecurrentRelationalNet(Model):
         self.saver.restore(self.session, name)
 
     def train_batch(self):
-        _, _loss, _logits, _answers, _indices, _summaries, _step, _train_qsize = self.session.run([self.train_step, self.loss, self.out, self.answers, self.task_indices, self.summaries, self.global_step, self.train_qsize_op], {self.is_training_ph: True})
+        _, _loss, _logits, _answers, _indices, _summaries, _step, _train_qsize = self.session.run(
+            [self.train_step, self.loss, self.out, self.answers, self.task_indices, self.summaries, self.global_step,
+             self.train_qsize_op], {self.is_training_ph: True})
         if _step % 1000 == 0:
             self._eval(self.train_writer, _answers, _indices, _logits, _summaries, _step)
 
         return _loss
 
     def val_batch(self):
-        _loss, _logits, _answers, _indices, _summaries, _step = self.session.run([self.loss, self.out, self.answers, self.task_indices, self.summaries, self.global_step], {self.is_training_ph: False})
+        _loss, _logits, _answers, _indices, _summaries, _step = self.session.run(
+            [self.loss, self.out, self.answers, self.task_indices, self.summaries, self.global_step],
+            {self.is_training_ph: False})
         self._eval(self.test_writer, _answers, _indices, _logits, _summaries, _step)
         return _loss
 
@@ -386,10 +420,12 @@ class BaBiRecurrentRelationalNet(Model):
 
             for i, (c, w) in enumerate(zip(correct, wrong)):
                 if c != 0 or w != 0:
-                    task_acc = tf.Summary(value=[tf.Summary.Value(tag="steps/%d/tasks/%s" % (step, i + 1), simple_value=c / (c + w))])
+                    task_acc = tf.Summary(
+                        value=[tf.Summary.Value(tag="steps/%d/tasks/%s" % (step, i + 1), simple_value=c / (c + w))])
                     writer.add_summary(task_acc, train_step)
 
-            overall_acc = tf.Summary(value=[tf.Summary.Value(tag="steps/%d/tasks/avg" % step, simple_value=sum(correct) / (sum(correct) + sum(wrong)))])
+            overall_acc = tf.Summary(value=[tf.Summary.Value(tag="steps/%d/tasks/avg" % step,
+                                                             simple_value=sum(correct) / (sum(correct) + sum(wrong)))])
             writer.add_summary(overall_acc, train_step)
 
 
