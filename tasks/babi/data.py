@@ -32,14 +32,14 @@ class bAbI:
                 facts = []
                 questions = []
                 for line in lines:
-                    id, rest = line.split(' ', 1)
+                    id, rest = line.split(' ', 1) # the id and the content of the fact/problem
                     intid = int(id)
                     if intid < lastid:
                         facts = []
                     lastid = intid
-                    if '\t' not in rest:
-                        facts.append(rest)
-                    else:
+                    if '\t' not in rest: # whether this line is a fact
+                        facts.append(rest) # drop the id, keep the content
+                    else: # else this line contains question, answer and the supporting facts' id
                         q, a, sf = rest.split('\t')
                         questions.append({
                             'q': q.strip(),
@@ -55,6 +55,7 @@ class bAbI:
                 with open(fname, 'r') as f:
                     lines = f.readlines()
                 lines = [sanitize(line) for line in lines]
+                # every file is a task, e.g. "qa1_train.txt" is a task, "qa2_train.txt" is another task.
                 tasks.append(parse(lines))
 
             return tasks

@@ -10,7 +10,7 @@ eval_fname = model_dir + '%d-eval.npz' % n_steps
 if not os.path.exists(eval_fname):
     model = BaBiRecurrentRelationalNet(True)
 
-    model.load(model_dir + "best")
+    model.load(model_dir + "best") # "model.ckpt" is a more common name rather than "best"
     batches = model.test_batches()
     np.savez(eval_fname, batches=batches)
 
